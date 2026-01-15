@@ -113,7 +113,7 @@ function doPost(e) {
 // GEMINI API INTEGRATION
 // ============================================
 function callGemini(apiKey, systemPrompt, transcript) {
-  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey;
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + apiKey;
 
   // Build the prompt: system instructions + transcript
   var fullPrompt = "";
