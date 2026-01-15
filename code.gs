@@ -1,15 +1,28 @@
+// ============================================
+// CONFIGURATION - UPDATE THIS VALUE
+// ============================================
+// To find your Spreadsheet ID: Open your Google Sheet and look at the URL
+// https://docs.google.com/spreadsheets/d/YOUR_SPREADSHEET_ID_IS_HERE/edit
+var SPREADSHEET_ID = "YOUR_SPREADSHEET_ID_HERE";
+
+// ============================================
+// MAIN WEBHOOK HANDLER
+// ============================================
 function doPost(e) {
   var lock = LockService.getScriptLock();
-  lock.tryLock(10000); // Prevent concurrent writes
+  var hasLock = lock.tryLock(10000);
+
+  if (!hasLock) {
+    return ContentService.createTextOutput("Server busy, please retry").setMimeType(ContentService.MimeType.TEXT);
+  }
 
   try {
     // 1. Parse the incoming webhook data
-    // ElevenLabs sends the useful data inside a 'data' object wrapper
     var jsonString = e.postData.contents;
     var payload = JSON.parse(jsonString);
-    
-    // Check if the payload has the 'data' wrapper (standard ElevenLabs format)
-    // or if it's flat (test events sometimes differ).
+
+    // ElevenLabs post-call webhook sends data in various formats depending on configuration
+    // Handle both wrapped format (payload.data) and flat format
     var data = payload.data || payload;
 
     // 2. Extract Transcript
@@ -17,72 +30,103 @@ function doPost(e) {
     var conversationId = data.conversation_id || "Unknown ID";
 
     if (data.transcript && Array.isArray(data.transcript)) {
-      // Loop through the transcript array to format it nicely
       transcript = data.transcript.map(function(item) {
-        return item.role.toUpperCase() + ": " + item.message;
+        var role = item.role || "UNKNOWN";
+        var message = item.message || "";
+        return role.toUpperCase() + ": " + message;
       }).join("\n\n");
+    } else if (typeof data.transcript === "string") {
+      transcript = data.transcript;
     } else {
-      // Fallback if transcript structure is unexpected
-      transcript = JSON.stringify(data.transcript || "No transcript found");
+      transcript = "No transcript found in webhook payload";
     }
 
-    // 3. Open Spreadsheet
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    // 3. Open Spreadsheet by ID (required for deployed web apps)
+    var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     var dataSheet = ss.getSheetByName("Data");
     var settingsSheet = ss.getSheetByName("Settings");
 
-    // Initialize headers if sheet is empty
+    // Verify required sheets exist
+    if (!dataSheet) {
+      throw new Error("Missing required sheet: 'Data'. Please create a sheet named 'Data' in your spreadsheet.");
+    }
+    if (!settingsSheet) {
+      throw new Error("Missing required sheet: 'Settings'. Please create a sheet named 'Settings' in your spreadsheet.");
+    }
+
+    // Initialize headers if Data sheet is empty
     if (dataSheet.getLastRow() === 0) {
       dataSheet.appendRow(["Timestamp", "Call ID", "Transcript", "Gemini Feedback", "Raw JSON"]);
     }
 
-    // 4. Get Settings
+    // 4. Get Settings from Settings sheet
+    // Expected layout: A1="API Key", B1=[your key], A2="Prompt", B2=[your prompt]
     var apiKey = settingsSheet.getRange("B1").getValue();
     var systemPrompt = settingsSheet.getRange("B2").getValue();
 
-    // 5. Call Gemini
+    // 5. Call Gemini for feedback
     var feedback = "";
-    if (apiKey && transcript.length > 10) { // Only analyze if we have content
+    if (!apiKey) {
+      feedback = "Error: Missing Gemini API Key. Add your API key to Settings sheet cell B1.";
+    } else if (transcript.length <= 10) {
+      feedback = "Transcript too short for analysis.";
+    } else if (!systemPrompt) {
+      feedback = "Warning: No system prompt set in Settings B2. Using transcript only.";
+      feedback = callGemini(apiKey, "", transcript);
+    } else {
       feedback = callGemini(apiKey, systemPrompt, transcript);
-    } else if (!apiKey) {
-      feedback = "Error: Missing API Key in Settings tab.";
     }
 
-    // 6. Save to Sheet
+    // 6. Save to Data sheet
     dataSheet.appendRow([
       new Date(),
       conversationId,
       transcript,
       feedback,
-      jsonString // Keep raw data for debugging
+      jsonString
     ]);
 
-    // 7. Return Success (Required 200 OK)
+    // 7. Return success response
     return ContentService.createTextOutput("Success").setMimeType(ContentService.MimeType.TEXT);
 
   } catch (error) {
-    // Log fatal errors to the sheet so you know what happened
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName("Data");
-    if (sheet) {
-      sheet.appendRow([new Date(), "ERROR", error.toString(), "", ""]);
+    // Log errors to the Data sheet for debugging
+    try {
+      var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+      var sheet = ss.getSheetByName("Data");
+      if (sheet) {
+        sheet.appendRow([new Date(), "ERROR", error.toString(), "", e ? e.postData.contents : "No payload"]);
+      }
+    } catch (logError) {
+      // Can't log to sheet - fail silently
+      Logger.log("Failed to log error: " + logError.toString());
     }
-    // Still return success to prevent ElevenLabs from retrying endlessly on script errors
-    return ContentService.createTextOutput("Error logged").setMimeType(ContentService.MimeType.TEXT);
-    
+    // Return 200 to prevent ElevenLabs from endlessly retrying
+    return ContentService.createTextOutput("Error logged: " + error.toString()).setMimeType(ContentService.MimeType.TEXT);
+
   } finally {
     lock.releaseLock();
   }
 }
 
+// ============================================
+// GEMINI API INTEGRATION
+// ============================================
 function callGemini(apiKey, systemPrompt, transcript) {
-  // Using gemini-1.5-flash for speed and cost efficiency
   var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey;
-  
+
+  // Build the prompt: system instructions + transcript
+  var fullPrompt = "";
+  if (systemPrompt && systemPrompt.trim().length > 0) {
+    fullPrompt = systemPrompt + "\n\n### CALL TRANSCRIPT:\n" + transcript;
+  } else {
+    fullPrompt = "Please analyze the following conversation transcript:\n\n" + transcript;
+  }
+
   var payload = {
     "contents": [{
       "parts": [{
-        "text": systemPrompt + "\n\n### CALL TRANSCRIPT:\n" + transcript
+        "text": fullPrompt
       }]
     }]
   };
@@ -96,16 +140,129 @@ function callGemini(apiKey, systemPrompt, transcript) {
 
   try {
     var response = UrlFetchApp.fetch(url, options);
+    var responseCode = response.getResponseCode();
     var json = JSON.parse(response.getContentText());
-    
-    if (json.candidates && json.candidates.length > 0) {
+
+    if (responseCode !== 200) {
+      if (json.error) {
+        return "Gemini API Error (" + responseCode + "): " + json.error.message;
+      }
+      return "Gemini API Error: HTTP " + responseCode;
+    }
+
+    if (json.candidates && json.candidates.length > 0 && json.candidates[0].content) {
       return json.candidates[0].content.parts[0].text;
-    } else if (json.error) {
-      return "API Error: " + json.error.message;
+    } else if (json.promptFeedback && json.promptFeedback.blockReason) {
+      return "Content blocked by Gemini: " + json.promptFeedback.blockReason;
     } else {
-      return "No response text generated.";
+      return "No response generated. Check your prompt and transcript.";
     }
   } catch (e) {
-    return "Fetch Failed: " + e.message;
+    return "Gemini request failed: " + e.message;
   }
+}
+
+// ============================================
+// SETUP & TESTING FUNCTIONS
+// ============================================
+
+/**
+ * Run this function manually to test your setup before deploying.
+ * Open the Apps Script editor, select this function, and click Run.
+ */
+function testSetup() {
+  Logger.log("=== CivicsBot Setup Test ===\n");
+
+  // 1. Check spreadsheet ID
+  if (SPREADSHEET_ID === "YOUR_SPREADSHEET_ID_HERE") {
+    Logger.log("❌ ERROR: You need to set your SPREADSHEET_ID at the top of the script.");
+    Logger.log("   Open your Google Sheet and copy the ID from the URL.");
+    return;
+  }
+  Logger.log("✓ Spreadsheet ID is configured");
+
+  // 2. Try to open spreadsheet
+  try {
+    var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    Logger.log("✓ Successfully opened spreadsheet: " + ss.getName());
+  } catch (e) {
+    Logger.log("❌ ERROR: Cannot open spreadsheet. Check your SPREADSHEET_ID.");
+    Logger.log("   Error: " + e.message);
+    return;
+  }
+
+  // 3. Check for required sheets
+  var dataSheet = ss.getSheetByName("Data");
+  var settingsSheet = ss.getSheetByName("Settings");
+
+  if (!dataSheet) {
+    Logger.log("❌ ERROR: Missing 'Data' sheet. Please create it.");
+  } else {
+    Logger.log("✓ 'Data' sheet found");
+  }
+
+  if (!settingsSheet) {
+    Logger.log("❌ ERROR: Missing 'Settings' sheet. Please create it.");
+    return;
+  } else {
+    Logger.log("✓ 'Settings' sheet found");
+  }
+
+  // 4. Check API key
+  var apiKey = settingsSheet.getRange("B1").getValue();
+  if (!apiKey) {
+    Logger.log("❌ ERROR: No API key in Settings B1. Add your Gemini API key.");
+  } else {
+    Logger.log("✓ Gemini API key found (length: " + apiKey.length + " chars)");
+  }
+
+  // 5. Check prompt
+  var systemPrompt = settingsSheet.getRange("B2").getValue();
+  if (!systemPrompt) {
+    Logger.log("⚠ WARNING: No system prompt in Settings B2. Add your feedback prompt.");
+  } else {
+    Logger.log("✓ System prompt found (length: " + systemPrompt.length + " chars)");
+  }
+
+  // 6. Test Gemini API
+  if (apiKey) {
+    Logger.log("\nTesting Gemini API connection...");
+    var testResponse = callGemini(apiKey, "Say 'API connection successful!' and nothing else.", "Test");
+    if (testResponse.indexOf("Error") === -1 && testResponse.indexOf("failed") === -1) {
+      Logger.log("✓ Gemini API working: " + testResponse.substring(0, 50));
+    } else {
+      Logger.log("❌ Gemini API issue: " + testResponse);
+    }
+  }
+
+  Logger.log("\n=== Setup Test Complete ===");
+}
+
+/**
+ * Simulates an ElevenLabs webhook for testing purposes.
+ * Run this manually to add a test entry to your spreadsheet.
+ */
+function testWebhook() {
+  var mockPayload = {
+    "data": {
+      "conversation_id": "test-" + new Date().getTime(),
+      "transcript": [
+        { "role": "user", "message": "Hello, can you help me understand how a bill becomes a law?" },
+        { "role": "agent", "message": "Of course! The process starts when a member of Congress introduces a bill..." },
+        { "role": "user", "message": "What happens after it's introduced?" },
+        { "role": "agent", "message": "The bill goes to a committee for review. They can approve, amend, or reject it." }
+      ]
+    }
+  };
+
+  var mockEvent = {
+    postData: {
+      contents: JSON.stringify(mockPayload)
+    }
+  };
+
+  Logger.log("Sending test webhook...");
+  var result = doPost(mockEvent);
+  Logger.log("Result: " + result.getContent());
+  Logger.log("Check your 'Data' sheet for the new entry!");
 }
