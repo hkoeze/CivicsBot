@@ -3,7 +3,7 @@
 // ============================================
 // To find your Spreadsheet ID: Open your Google Sheet and look at the URL
 // https://docs.google.com/spreadsheets/d/YOUR_SPREADSHEET_ID_IS_HERE/edit
-var SPREADSHEET_ID = "YOUR_SPREADSHEET_ID_HERE";
+var SPREADSHEET_ID = "1yRck3iWGuAFoZKBRpFtQ9AocmnWvC2eAcaDUJqjQdjc";
 
 // Webhook URL Secret - add ?secret=CivicsBot1 to your webhook URL in ElevenLabs
 var WEBHOOK_SECRET = "CivicsBot1";
@@ -124,7 +124,7 @@ function doPost(e) {
 // GEMINI API INTEGRATION
 // ============================================
 function callGemini(apiKey, systemPrompt, transcript) {
-  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash-preview:generateContent?key=" + apiKey;
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=" + apiKey;
 
   // Build the prompt: system instructions + transcript
   var fullPrompt = "";
