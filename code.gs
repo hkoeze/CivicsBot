@@ -3,10 +3,10 @@
 // ============================================
 // To find your Spreadsheet ID: Open your Google Sheet and look at the URL
 // https://docs.google.com/spreadsheets/d/YOUR_SPREADSHEET_ID_IS_HERE/edit
-var SPREADSHEET_ID = "1yRck3iWGuAFoZKBRpFtQ9AocmnWvC2eAcaDUJqjQdjc";
+var SPREADSHEET_ID = "PUT YOUR SPREADSHEET ID HERE";
 
 // Webhook URL Secret - add ?secret=CivicsBot1 to your webhook URL in ElevenLabs
-var WEBHOOK_SECRET = "CivicsBot1";
+var WEBHOOK_SECRET = "PUT YOUR SECRET PHRASE HERE";
 
 // ============================================
 // MAIN WEBHOOK HANDLER
