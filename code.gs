@@ -1,9 +1,13 @@
 // ============================================
-// CONFIGURATION - UPDATE THIS VALUE
+// CONFIGURATION - UPDATE THESE VALUES
 // ============================================
 // To find your Spreadsheet ID: Open your Google Sheet and look at the URL
 // https://docs.google.com/spreadsheets/d/YOUR_SPREADSHEET_ID_IS_HERE/edit
 var SPREADSHEET_ID = "YOUR_SPREADSHEET_ID_HERE";
+
+// ElevenLabs Webhook HMAC Secret for signature verification
+// Set this same secret in your ElevenLabs webhook settings
+var WEBHOOK_SECRET = "CivicsBot1";
 
 // ============================================
 // MAIN WEBHOOK HANDLER
@@ -17,8 +21,19 @@ function doPost(e) {
   }
 
   try {
-    // 1. Parse the incoming webhook data
+    // 0. Verify HMAC signature from ElevenLabs
     var jsonString = e.postData.contents;
+    if (WEBHOOK_SECRET && WEBHOOK_SECRET.length > 0) {
+      var signature = e.parameter["xi-signature"] || (e.headers && e.headers["xi-signature"]);
+      if (!signature) {
+        return ContentService.createTextOutput("Missing signature").setMimeType(ContentService.MimeType.TEXT);
+      }
+      if (!verifyHmacSignature(jsonString, signature, WEBHOOK_SECRET)) {
+        return ContentService.createTextOutput("Invalid signature").setMimeType(ContentService.MimeType.TEXT);
+      }
+    }
+
+    // 1. Parse the incoming webhook data
     var payload = JSON.parse(jsonString);
 
     // ElevenLabs post-call webhook sends data in various formats depending on configuration
@@ -106,6 +121,20 @@ function doPost(e) {
 
   } finally {
     lock.releaseLock();
+  }
+}
+
+// ============================================
+// HMAC SIGNATURE VERIFICATION
+// ============================================
+function verifyHmacSignature(payload, signature, secret) {
+  try {
+    var hmac = Utilities.computeHmacSha256Signature(payload, secret);
+    var expectedSignature = Utilities.base64Encode(hmac);
+    return signature === expectedSignature;
+  } catch (e) {
+    Logger.log("HMAC verification error: " + e.message);
+    return false;
   }
 }
 
